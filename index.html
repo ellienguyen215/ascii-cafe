@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ASCII Rainy Café</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gaegu:wght@700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #22170f; }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  #help {
+    position: fixed; left: 12px; bottom: 10px; max-width: calc(100vw - 330px);
+    font: 12px ui-monospace, Menlo, Consolas, monospace; line-height: 1.5;
+    color: rgba(255, 232, 205, .55); background: rgba(0, 0, 0, .25); padding: 6px 10px; border-radius: 6px;
+    pointer-events: none; transition: opacity .6s;
+  }
+  #ctl { position: fixed; right: 14px; bottom: 12px; display: flex; gap: 8px; align-items: center; }
+  #ctl button {
+    font: 700 17px 'Gaegu', ui-monospace, monospace; color: #ffe2c2; background: rgba(40, 24, 14, .7);
+    border: 1px dashed rgba(255, 210, 170, .35); border-radius: 18px; padding: 3px 13px 5px; cursor: pointer;
+  }
+  #ctl button:hover { background: rgba(70, 40, 22, .8); }
+  #ctl button.on { border-style: solid; border-color: rgba(255, 210, 170, .7); }
+  #vol { width: 70px; accent-color: #e7a46a; }
+  #vol[hidden] { display: none; }
+  #toast {
+    position: fixed; left: 50%; top: 16px; transform: translate(-50%, -20px); opacity: 0; pointer-events: none;
+    font: 700 20px 'Gaegu', ui-monospace, monospace; color: #fff3e3; background: rgba(60, 34, 18, .85);
+    padding: 4px 16px 6px; border-radius: 20px; transition: opacity .4s, transform .4s; white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  @media (max-width: 700px) { #help { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="help">drag on the window: wipe the fog · tap the cat · tap the mug: sip · r: rain · m: sound · l: lofi · c: clock · space: pause</div>
+<div id="ctl">
+  <input id="vol" type="range" min="0" max="1" step="0.05" value="0.6" aria-label="music volume" hidden>
+  <button id="lofiBtn">♪ lofi</button>
+  <button id="rainBtn">rain</button>
+  <button id="sndBtn">sound: off</button>
+</div>
+<div id="toast"></div>
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  // ---------- saved preferences ----------
+  const STORE = 'ascii-cafe-v1';
+  const prefs = { sound: false, rain: 1, clock: true, h24: false };
+  try { Object.assign(prefs, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch (e) {}
+  const save = () => { try { localStorage.setItem(STORE, JSON.stringify(prefs)); } catch (e) {} };
+  const RAIN_NAMES = ['drizzle', 'rain', 'storm'];
+
+  // ---------- helpers ----------
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const mixCache = new Map();
+  function mix(a, b, t) {
+    t = Math.max(0, Math.min(1, Math.round(t * 20) / 20));
+    if (t === 0) return a; if (t === 1) return b;
+    const k = a + b + t; let v = mixCache.get(k);
+    if (!v) {
+      const A = parseInt(a.slice(1), 16), B = parseInt(b.slice(1), 16);
+      const f = s => Math.round(((A >> s) & 255) + (((B >> s) & 255) - ((A >> s) & 255)) * t).toString(16).padStart(2, '0');
+      v = '#' + f(16) + f(8) + f(0); mixCache.set(k, v);
+    }
+    return v;
+  }
+
+  // ---------- grid ----------
+  const FONT_PX = 12;
+  let cw, ch, cols, rows, cellCh, cellCol, cellPri;
+  function put(gx, gy, c, col, pri) {
+    gx |= 0; gy |= 0;
+    if (gx < 0 || gy < 0 || gx >= cols || gy >= rows) return;
+    const i = gy * cols + gx;
+    if (pri > cellPri[i]) { cellPri[i] = pri; cellCh[i] = c; cellCol[i] = col; }
+  }
+  function putText(s, gx, gy, col, pri) { for (let i = 0; i < s.length; i++) if (s[i] !== ' ') put(gx + i, gy, s[i], col, pri); }
+  function putArt(lines, gx, gy, colFn, pri) {
+    lines.forEach((row, r) => { for (let i = 0; i < row.length; i++) if (row[i] !== ' ') put(gx + i, gy + r, row[i], colFn(row[i], i, r), pri); });
+  }
+
+  // ---------- time of day (follows your clock) ----------
+  function daylight() {
+    const d = new Date(), h = d.getHours() + d.getMinutes() / 60;
+    if (h >= 8 && h < 17) return 1;
+    if (h >= 6 && h < 8) return (h - 6) / 2;
+    if (h >= 17 && h < 19.5) return 1 - (h - 17) / 2.5;
+    return 0;
+  }
+  let day = daylight();
+
+  // ---------- layout ----------
+  let W, buildings = [], bokeh = [], fog, lights = [], ix0, ix1, iy0, iy1, mx, my;
+  function layout() {
+    W = { x0: Math.round(cols * 0.12), x1: Math.round(cols * 0.88), y0: Math.max(6, Math.round(rows * 0.11)), y1: Math.round(rows * 0.8) };
+    ix0 = W.x0 + 2; ix1 = W.x1 - 2; iy0 = W.y0 + 1; iy1 = W.y1 - 1;
+    mx = Math.round((W.x0 + W.x1) / 2); my = Math.round(W.y0 + (W.y1 - W.y0) * 0.5);
+    // the city outside
+    buildings = [];
+    for (let x = ix0 - 2; x < ix1 + 2;) {
+      const w = Math.round(rnd(6, 15)), h = Math.round((iy1 - iy0) * rnd(0.22, 0.62));
+      const wins = [];
+      for (let yy = iy1 - h + 2; yy < iy1 - 1; yy += 2) for (let xx = x + 1; xx < x + w - 1; xx += 2) wins.push({ x: xx, y: yy, on: Math.random() < 0.45, col: Math.random() < 0.8 ? '#ffd27a' : '#ffb0c8' });
+      buildings.push({ x, w, h, wins, tone: Math.random(), antenna: Math.random() < 0.3 });
+      x += w + (Math.random() < 0.3 ? 1 : 0);
+    }
+    // soft blurry lights seen through the wet glass
+    bokeh = Array.from({ length: 18 }, () => ({ x: rnd(ix0, ix1) * cw, y: rnd(iy0 + (iy1 - iy0) * 0.35, iy1) * ch, r: rnd(10, 30),
+      col: ['255,205,120', '255,150,110', '255,140,180', '140,210,255', '255,230,170'][Math.random() * 5 | 0], ph: Math.random() * 10 }));
+    // fog on the glass
+    fog = new Float32Array((ix1 - ix0 + 1) * (iy1 - iy0 + 1)).fill(0.6);
+    // string lights drooping across the top of the wall
+    lights = [];
+    const hooks = []; for (let x = W.x0 - 3; x <= W.x1 + 3; x += Math.max(14, Math.round((W.x1 - W.x0) / 5))) hooks.push(x);
+    for (let k = 0; k < hooks.length - 1; k++) {
+      const a = hooks[k], b = hooks[k + 1];
+      for (let x = a; x <= b; x++) {
+        const t = (x - a) / (b - a), y = 1 + Math.round(Math.sin(t * Math.PI) * Math.min(3, W.y0 - 4));
+        lights.push({ x, y, bulb: (x - a) % 4 === 2, ph: Math.random() * 10, col: ['#ffcf6e', '#ff9e7a', '#ffb3cf', '#a9e3ff', '#fff2b0'][(x >> 2) % 5] });
+      }
+    }
+  }
+  function resize() {
+    const dpr = devicePixelRatio || 1;
+    canvas.width = innerWidth * dpr; canvas.height = innerHeight * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.font = `${FONT_PX}px ui-monospace, Menlo, Consolas, monospace`; ctx.textBaseline = 'top';
+    cw = ctx.measureText('M').width; ch = FONT_PX;
+    cols = Math.ceil(innerWidth / cw); rows = Math.ceil(innerHeight / ch);
+    const n = cols * rows; cellCh = new Array(n); cellCol = new Array(n); cellPri = new Float32Array(n);
+    layout();
+    drops.length = 0; trails.length = 0;
+  }
+
+  // ---------- rain on the glass ----------
+  const drops = [], trails = [], outside = [];
+  const fogCv = document.createElement('canvas'), fogCtx = fogCv.getContext('2d');
+  let flash = 0, nextFlash = 600;
+  function inGlass(px, py) { return px > ix0 * cw && px < (ix1 + 1) * cw && py > iy0 * ch && py < (iy1 + 1) * ch; }
+  function updateRain() {
+    const lvl = prefs.rain;
+    // new little drops land on the glass
+    const spawn = [0.25, 0.7, 1.4][lvl];
+    for (let k = 0; k < 3; k++) if (Math.random() < spawn / 3 && drops.length < [70, 150, 230][lvl])
+      drops.push({ x: rnd(ix0, ix1 + 1) * cw, y: rnd(iy0, iy1 + 1) * ch, r: rnd(1.2, 3.2), vy: 0, wob: Math.random() * 10 });
+    for (let i = drops.length - 1; i >= 0; i--) {
+      const d = drops[i];
+      if (d.vy === 0 && d.r > 3.3 && Math.random() < 0.01) d.vy = 0.3;
+      if (d.vy > 0) {
+        d.vy = Math.min(2.2, d.vy + 0.03 * d.r / 4);
+        d.y += d.vy; d.x += Math.sin(d.y * 0.05 + d.wob) * 0.35;
+        d.r = Math.max(2.4, d.r - 0.004);
+        if (Math.random() < 0.6) trails.push({ x: d.x, y: d.y - d.r, life: 1 });
+        // swallow smaller drops it runs into
+        for (let j = drops.length - 1; j >= 0; j--) {
+          if (j === i) continue; const e = drops[j];
+          if (Math.abs(e.y - d.y) < d.r + e.r && Math.abs(e.x - d.x) < d.r + e.r + 2) { d.r = Math.min(7, Math.sqrt(d.r * d.r + e.r * e.r)); drops.splice(j, 1); if (j < i) i--; }
+        }
+        if (d.y > (iy1 + 1) * ch) { drops.splice(i, 1); continue; }
+      } else if (Math.random() < 0.002) d.r += 0.6;     // still drops slowly grow as rain hits them
+    }
+    for (let i = trails.length - 1; i >= 0; i--) { trails[i].life -= 0.006; if (trails[i].life <= 0) trails.splice(i, 1); }
+    if (trails.length > 900) trails.splice(0, trails.length - 900);
+    // rain falling outside
+    const out = [3, 8, 15][lvl];
+    for (let k = 0; k < out; k++) outside.push({ x: rnd(ix0, ix1) * cw, y: iy0 * ch, vy: rnd(9, 14), vx: lvl === 2 ? 2 : 0.6 });
+    for (let i = outside.length - 1; i >= 0; i--) { const o = outside[i]; o.y += o.vy; o.x += o.vx; if (o.y > (iy1 + 1) * ch) outside.splice(i, 1); }
+    // lightning in a storm
+    flash *= 0.86;
+    if (lvl === 2 && --nextFlash <= 0) { flash = 1; nextFlash = rnd(500, 1400); setTimeout(() => sfx.thunder(), rnd(300, 1600)); setTimeout(() => { if (Math.random() < 0.5) flash = 0.7; }, 120); }
+    // fog slowly comes back
+    const target = 0.6 - day * 0.15;
+    for (let i = 0; i < fog.length; i++) fog[i] += (target - fog[i]) * 0.0016;
+  }
+  function wipe(px, py) {
+    const R = 2.6;
+    const gx = px / cw - ix0, gy = py / ch - iy0, w = ix1 - ix0 + 1, h = iy1 - iy0 + 1;
+    for (let y = Math.floor(gy - R); y <= Math.ceil(gy + R); y++) for (let x = Math.floor(gx - R * 1.7); x <= Math.ceil(gx + R * 1.7); x++) {
+      if (x < 0 || y < 0 || x >= w || y >= h) continue;
+      const d = Math.hypot((x - gx) / 1.7, y - gy) / R; if (d > 1) continue;
+      fog[y * w + x] = Math.min(fog[y * w + x], d * d * 0.5);
+    }
+    for (let i = drops.length - 1; i >= 0; i--) if (Math.hypot(drops[i].x - px, drops[i].y - py) < R * ch) drops.splice(i, 1);
+  }
+
+  // ---------- windowsill friends ----------
+  const cat = { blink: 0, awake: 0, tail: 0, z: 0 };
+  const CAT_SLEEP = ['   /\\___/\\', '  (  -.-  )', '  /   ^   \\___', ' (  |   |  )   )~', '  \\_|___|_/___/'];
+  const CAT_AWAKE = ['   /\\___/\\', '  (  o.o  )', '  /   ^   \\___', ' (  |   |  )   )~', '  \\_|___|_/___/'];
+  const MUG = ['  .------.', '  |~~~~~~|]', '  |      |]', '  \\      /', "   `----'"];
+  const PLANT = ['  \\ | /', ' \\\\ | //', '  \\\\|//', ' .-----.', ' \\_____/'];
+  let sips = 0, steam = [];
+  function catPos() { return { x: ix1 - 20, y: W.y1 - 4 }; }
+  function mugPos() { return { x: ix0 + Math.round((ix1 - ix0) * 0.32), y: W.y1 - 4 }; }
+  function plantPos() { return { x: ix0 + 1, y: W.y1 - 4 }; }
+  function hitArt(px, py, pos, w, h) { const gx = px / cw, gy = py / ch; return gx >= pos.x && gx <= pos.x + w && gy >= pos.y && gy <= pos.y + h; }
+  function updateSill(t) {
+    if (cat.awake > 0) cat.awake--;
+    if (Math.random() < 0.004) cat.tail = 30;
+    if (cat.tail > 0) cat.tail--;
+    // steam curls up from the mug
+    const m = mugPos();
+    if (sips < 6 && Math.random() < 0.18) steam.push({ x: (m.x + 4 + rnd(0, 3)) * cw, y: (m.y - 0.5) * ch, life: 0, max: rnd(50, 90), w: Math.random() * 10 });
+    for (let i = steam.length - 1; i >= 0; i--) { const s = steam[i]; s.life++; s.y -= 0.45; s.x += Math.sin(s.life * 0.08 + s.w) * 0.35; if (s.life > s.max) steam.splice(i, 1); }
+  }
+  function drawSill(t, lamp) {
+    const wood = mix('#6b4630', '#ffb070', lamp * 0.12), woodDk = mix('#4a2f20', '#ffb070', lamp * 0.08);
+    for (let x = W.x0 - 3; x <= W.x1 + 3; x++) { put(x, W.y1 + 1, '=', wood, 50); put(x, W.y1 + 2, '"', woodDk, 50); }
+    // plant
+    const p = plantPos();
+    putArt(PLANT, p.x, p.y, (c, i, r) => r >= 3 ? '#c46f45' : (c === '|' ? '#5f9f5a' : '#79c06c'), 400);
+    // mug of coffee
+    const m = mugPos();
+    putArt(MUG, m.x, m.y, (c, i, r) => r === 1 && c === '~' ? (sips >= 6 ? '#e9dccb' : '#7a4b2c') : '#efe2d0', 400);
+    for (const s of steam) {
+      const a = 1 - s.life / s.max;
+      put(Math.floor(s.x / cw), Math.floor(s.y / ch), s.life % 20 < 10 ? '(' : ')', mix('#2a1c14', '#f3e9de', a * 0.7), 380);
+    }
+    // sleeping cat
+    const c = catPos(), art = (cat.awake ? CAT_AWAKE : CAT_SLEEP).slice();
+    if (cat.tail > 0) art[3] = art[3].slice(0, -1) + (cat.tail % 10 < 5 ? '~' : '/');
+    if (cat.awake > 0 && cat.awake < 40) art[1] = '  (  ^.^  )';
+    const breathe = Math.sin(t * 0.0018) > 0.3 && !cat.awake ? 1 : 0;
+    if (breathe) art[3] = art[3].replace('  )   )', '  )    )');
+    putArt(art, c.x, c.y, (ch2, i, r) => r === 1 && i >= 4 && i <= 8 && 'o-.^'.includes(ch2) ? '#3b2a20' : r === 2 && ch2 === '^' ? '#ff9fb8' : '#f6b374', 410);
+    // little z's float up while it sleeps
+    if (!cat.awake) {
+      const p2 = (t * 0.0004) % 1;
+      const zz = ['z', 'z', 'Z'];
+      zz.forEach((z, k) => {
+        const pp = (p2 + k / 3) % 1;
+        put(c.x + 11 + Math.round(pp * 4), c.y - 1 - Math.round(pp * 4), z, mix('#2a1c14', '#ffe8cc', 1 - pp), 420);
+      });
+    } else if (cat.awake > 60) putText('meow!', c.x + 11, c.y - 2, '#ffe8cc', 420);
+  }
+
+  // ---------- string lights ----------
+  function drawLights(t) {
+    for (const L of lights) {
+      if (!L.bulb) { put(L.x, L.y, '~', '#5a4030', 60); continue; }
+      const tw = 0.6 + 0.4 * Math.sin(t * 0.002 + L.ph);
+      put(L.x, L.y + 1, 'o', mix('#5a4030', L.col, tw), 70);
+      put(L.x, L.y, '|', '#5a4030', 60);
+    }
+  }
+  function drawLightGlow(t) {
+    for (const L of lights) {
+      if (!L.bulb) continue;
+      const tw = 0.6 + 0.4 * Math.sin(t * 0.002 + L.ph);
+      const x = (L.x + 0.5) * cw, y = (L.y + 1.5) * ch, r = 26;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, L.col + Math.round(tw * 70).toString(16).padStart(2, '0')); g.addColorStop(1, L.col + '00');
+      ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+  }
+
+  // ---------- clock ----------
+  const FONT = {
+    '0': ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'], '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
+    '2': ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'], '3': ['.###.', '#...#', '....#', '..##.', '....#', '#...#', '.###.'],
+    '4': ['...#.', '..##.', '.#.#.', '#..#.', '#####', '...#.', '...#.'], '5': ['#####', '#....', '####.', '....#', '....#', '#...#', '.###.'],
+    '6': ['.###.', '#....', '#....', '####.', '#...#', '#...#', '.###.'], '7': ['#####', '....#', '...#.', '..#..', '.#...', '.#...', '.#...'],
+    '8': ['.###.', '#...#', '#...#', '.###.', '#...#', '#...#', '.###.'], '9': ['.###.', '#...#', '#...#', '.####', '....#', '....#', '.###.'],
+    ':': ['...', '...', '.#.', '...', '.#.', '...', '...'],
+  };
+  const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+  function drawClock() {
+    const now = new Date(); let h = now.getHours();
+    const ampm = prefs.h24 ? '' : h >= 12 ? 'pm' : 'am'; if (!prefs.h24) h = h % 12 || 12;
+    const p2 = n => String(n).padStart(2, '0'), time = (prefs.h24 ? p2(h) : h) + ':' + p2(now.getMinutes());
+    const blink = now.getSeconds() % 2 === 0;
+    let units = 0; for (const c of time) units += FONT[c][0].length + 1;
+    let sx = Math.max(2, Math.min(6, Math.floor((ix1 - ix0) * 0.34 / units)));
+    while (sx > 1 && 7 * Math.max(1, Math.round(sx * cw / ch)) + 4 > my - iy0) sx--;
+    const sy = Math.max(1, Math.round(sx * cw / ch));
+    let wpx = 0; for (const c of time) wpx += FONT[c][0].length * sx + sx; wpx -= sx;
+    const x0 = Math.floor((ix0 + ix1 - wpx) / 2), y0 = iy0 + Math.max(1, Math.floor((my - iy0 - 7 * sy - 3) / 2));
+    let x = x0;
+    for (const c of time) {
+      const g = FONT[c], gw = g[0].length, col = c === ':' && !blink ? '#8a7a6c' : '#fff3e2';
+      for (let gy = -1; gy < 7 * sy + 1; gy++) for (let gx = -1; gx < gw * sx + 1; gx++) {
+        const u = (gx + 0.5) / sx, v = (gy + 0.5) / sy; let d = 9;
+        for (let r = Math.floor(v) - 1; r <= Math.floor(v) + 1; r++) for (let q = Math.floor(u) - 1; q <= Math.floor(u) + 1; q++) {
+          if (r < 0 || q < 0 || r >= 7 || q >= gw || g[r][q] !== '#') continue; d = Math.min(d, Math.hypot(u - q - 0.5, v - r - 0.5));
+        }
+        if (d <= 0.86) put(x + gx, y0 + gy, d < 0.66 ? 'o' : '.', col, 900);
+      }
+      x += gw * sx + sx;
+    }
+    if (ampm) putText(ampm, x0 + wpx + sx, y0 + 7 * sy - 1, '#fff3e2', 900);
+    const date = `${DAYS[now.getDay()]} · ${MONTHS[now.getMonth()]} ${now.getDate()}`;
+    putText(date, Math.floor((ix0 + ix1 - date.length) / 2), y0 + 7 * sy + 1, '#eadacb', 900);
+  }
+
+  // ---------- sound (made in the browser) ----------
+  let actx = null, master = null, rainGain = null, noiseBuf = null, brownBuf = null, purrGain = null;
+  function ensureAudio() {
+    if (actx) return actx;
+    try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
+    master = actx.createGain(); master.gain.value = 0; master.connect(actx.destination);
+    const len = actx.sampleRate * 2;
+    noiseBuf = actx.createBuffer(1, len, actx.sampleRate); brownBuf = actx.createBuffer(1, len, actx.sampleRate);
+    const nd = noiseBuf.getChannelData(0), bd = brownBuf.getChannelData(0); let last = 0;
+    for (let i = 0; i < len; i++) { const w = Math.random() * 2 - 1; nd[i] = w; last = (last + 0.02 * w) / 1.02; bd[i] = last * 3.5; }
+    // rain against the window
+    const r = actx.createBufferSource(); r.buffer = noiseBuf; r.loop = true;
+    const bp = actx.createBiquadFilter(); bp.type = 'lowpass'; bp.frequency.value = 3200;
+    const hp = actx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 400;
+    rainGain = actx.createGain(); rainGain.gain.value = 0;
+    r.connect(hp).connect(bp).connect(rainGain).connect(master); r.start();
+    // the cat's purr: low rumble that pulses
+    const pu = actx.createBufferSource(); pu.buffer = brownBuf; pu.loop = true;
+    const pl = actx.createBiquadFilter(); pl.type = 'lowpass'; pl.frequency.value = 180;
+    purrGain = actx.createGain(); purrGain.gain.value = 0;
+    const lfo = actx.createOscillator(); lfo.frequency.value = 24; const lfoAmt = actx.createGain(); lfoAmt.gain.value = 0;
+    lfo.connect(lfoAmt).connect(purrGain.gain); lfo.start(); purrGain._lfo = lfoAmt;
+    pu.connect(pl).connect(purrGain).connect(master); pu.start();
+    // little taps of drops on the glass
+    const tap = () => {
+      if (live() && !paused) {
+        const n = [1, 2, 4][prefs.rain];
+        for (let k = 0; k < n; k++) if (Math.random() < 0.6) tone(rnd(1800, 4200), rnd(0.008, 0.025), rnd(0.02, 0.05), 0.7, k * rnd(0.02, 0.09));
+      }
+      setTimeout(tap, rnd(60, 200));
+    };
+    tap();
+    return actx;
+  }
+  const live = () => prefs.sound && actx && actx.state === 'running';
+  function applySound() {
+    sndBtn.textContent = prefs.sound ? 'sound: on' : 'sound: off'; sndBtn.classList.toggle('on', prefs.sound);
+    if (!prefs.sound) { if (actx) master.gain.setTargetAtTime(0, actx.currentTime, 0.2); return; }
+    const a = ensureAudio(); if (!a) return; a.resume().catch(() => {});
+    master.gain.setTargetAtTime(0.9, a.currentTime, 0.4);
+  }
+  function tone(f, vol, dur, rise = 1, when = 0, type = 'sine') {
+    if (!live()) return;
+    const t = actx.currentTime + when, o = actx.createOscillator(), g = actx.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t); o.frequency.exponentialRampToValueAtTime(f * rise, t + dur);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + Math.min(0.01, dur / 4)); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(master); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function noise(buf, freq, vol, dur, type = 'bandpass', attack = 0.01) {
+    if (!live()) return;
+    const t = actx.currentTime, s = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
+    s.buffer = buf; f.type = type; f.frequency.value = freq; f.Q.value = 0.7;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f).connect(g).connect(master); s.start(t, Math.random()); s.stop(t + dur + 0.05);
+  }
+  const sfx = {
+    thunder: () => { noise(brownBuf, 120, 0.9, rnd(2.5, 4), 'lowpass', 0.08); noise(noiseBuf, 300, 0.15, 1.2, 'lowpass', 0.02); },
+    sip: () => { noise(noiseBuf, 900, 0.18, 0.25); tone(320, 0.08, 0.15, 1.4, 0.12); },
+    meow: () => { tone(620, 0.12, 0.18, 1.5, 0, 'triangle'); tone(900, 0.1, 0.35, 0.6, 0.16, 'triangle'); },
+    purr: (on) => { if (!purrGain) return; const t = actx.currentTime; purrGain.gain.setTargetAtTime(on ? 0.25 : 0, t, 0.2); purrGain._lfo.gain.setTargetAtTime(on ? 0.2 : 0, t, 0.2); },
+    squeak: () => tone(rnd(1400, 2000), 0.03, 0.06, 1.2, 0, 'triangle'),
+  };
+
+  // ---------- lofi music ----------
+  const lofiBtn = document.getElementById('lofiBtn'), vol = document.getElementById('vol');
+  let lofi = null;
+  function startLofi() {
+    let ac; try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
+    const m = ac.createGain(); m.gain.value = 0;
+    const warm = ac.createBiquadFilter(); warm.type = 'lowpass'; warm.frequency.value = 2400;
+    m.connect(warm).connect(ac.destination); m.gain.setTargetAtTime(+vol.value, ac.currentTime, 0.8);
+    const nb = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate), nd = nb.getChannelData(0);
+    for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+    const BPM = 70, beat = 60 / BPM, swing = beat * 0.17;
+    const CH = [[52, 55, 59, 62], [57, 60, 64, 67], [50, 53, 57, 60], [55, 59, 62, 65]];   // Em7 – Am7 – Dm7 – G7
+    const MEL = [71, 74, 76, 79, 81, 79, 76, 74];
+    const hz = n => 440 * Math.pow(2, (n - 69) / 12);
+    const keys = (n, t, len, v) => { const o = ac.createOscillator(), o2 = ac.createOscillator(), g = ac.createGain(), g2 = ac.createGain(), f = ac.createBiquadFilter();
+      o.type = 'sine'; o2.type = 'triangle'; o.frequency.value = hz(n); o2.frequency.value = hz(n) * 2.002; g2.gain.value = 0.12;
+      f.type = 'lowpass'; f.frequency.setValueAtTime(1700, t); f.frequency.exponentialRampToValueAtTime(550, t + len);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(v, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+      o.connect(g); o2.connect(g2).connect(g); g.connect(f).connect(m); o.start(t); o2.start(t); o.stop(t + len + 0.05); o2.stop(t + len + 0.05); };
+    const kick = t => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.setValueAtTime(115, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.18);
+      g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35); o.connect(g).connect(m); o.start(t); o.stop(t + 0.4); };
+    const hit = (t, fr, v, len) => { const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain(); s.buffer = nb;
+      f.type = fr > 5000 ? 'highpass' : 'bandpass'; f.frequency.value = fr; g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+      s.connect(f).connect(g).connect(m); s.start(t, Math.random()); s.stop(t + len + 0.02); };
+    const bass = (n, t, len) => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = hz(n - 12);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.3, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + len); o.connect(g).connect(m); o.start(t); o.stop(t + len + 0.05); };
+    let next = ac.currentTime + 0.15, step = 0;
+    const sched = () => {
+      while (next < ac.currentTime + 0.5) {
+        const bar = Math.floor(step / 8) % CH.length, e = step % 8, t = next + (e % 2 ? swing : 0), c = CH[bar];
+        if (e === 0) { c.forEach((n, i) => keys(n, t + i * 0.012, beat * 3.6, 0.07)); bass(c[0], t, beat * 1.8); }
+        if (e === 5) c.slice(1).forEach((n, i) => keys(n, t + i * 0.01, beat * 1.5, 0.035));
+        if (e === 4) bass(c[0] + 7, t, beat);
+        if (e === 0 || e === 5) kick(t);
+        if (e === 2 || e === 6) hit(t, 1800, 0.2, 0.18);
+        hit(t, 8000, e % 2 ? 0.03 : 0.055, 0.05);
+        if (Math.random() < 0.25 && e % 2 === 0) keys(MEL[Math.random() * MEL.length | 0], t, beat * 1.4, 0.045);
+        next += beat / 2; step++;
+      }
+    };
+    const timer = setInterval(sched, 100); sched();
+    lofi = { ac, m, timer };
+  }
+  function stopLofi() { if (!lofi) return; const L = lofi; lofi = null; L.m.gain.setTargetAtTime(0, L.ac.currentTime, 0.4); setTimeout(() => { clearInterval(L.timer); L.ac.close(); }, 1500); }
+  function toggleLofi() {
+    if (lofi) { stopLofi(); lofiBtn.classList.remove('on'); vol.hidden = true; toast('lofi off'); }
+    else { startLofi(); lofiBtn.classList.add('on'); vol.hidden = false; toast('lofi on ♪'); }
+  }
+  lofiBtn.addEventListener('click', toggleLofi);
+  vol.addEventListener('input', () => { if (lofi) lofi.m.gain.setTargetAtTime(+vol.value, lofi.ac.currentTime, 0.1); });
+
+  // ---------- toast ----------
+  const toastEl = document.getElementById('toast'); let toastT;
+  function toast(m) { toastEl.textContent = m; toastEl.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('show'), 2600); }
+
+  // ---------- render ----------
+  function draw(t) {
+    cellPri.fill(0);
+    const lamp = 1 - day * 0.6;     // how much the warm indoor light shows
+    // wall
+    ctx.fillStyle = mix('#22170f', '#4a3a30', day * 0.5); ctx.fillRect(0, 0, innerWidth, innerHeight);
+    // wainscot panels under the sill
+    for (let y = W.y1 + 3; y < rows; y++) for (let x = 0; x < cols; x++) if (x % 12 === 0) put(x, y, '|', '#3a2819', 20);
+    for (let x = 0; x < cols; x++) put(x, W.y1 + 3, '_', '#3a2819', 20);
+
+    // outside: sky
+    const px0 = ix0 * cw, py0 = iy0 * ch, pw = (ix1 - ix0 + 1) * cw, ph = (iy1 - iy0 + 1) * ch;
+    const sky = ctx.createLinearGradient(0, py0, 0, py0 + ph);
+    sky.addColorStop(0, mix('#0b1026', '#76838f', day)); sky.addColorStop(0.6, mix('#262448', '#97a1aa', day)); sky.addColorStop(1, mix('#5a3650', '#b6bcc2', day));
+    ctx.fillStyle = sky; ctx.fillRect(px0, py0, pw, ph);
+    if (flash > 0.02) { ctx.fillStyle = `rgba(225, 232, 255, ${flash * 0.55})`; ctx.fillRect(px0, py0, pw, ph); }
+    // buildings (clipped to the window)
+    ctx.save(); ctx.beginPath(); ctx.rect(px0, py0, pw, ph); ctx.clip();
+    for (const b of buildings) {
+      const top = iy1 - b.h + 1;
+      ctx.fillStyle = mix(mix('#07080f', '#0f1220', b.tone), '#5e6873', day * 0.9);
+      ctx.fillRect(b.x * cw, top * ch, b.w * cw, (iy1 - top + 1) * ch);
+      if (b.antenna) { ctx.fillRect((b.x + b.w / 2) * cw, (top - 2) * ch, 2, 2 * ch); if (Math.sin(t * 0.004 + b.x) > 0.6) { ctx.fillStyle = '#ff5a5a'; ctx.fillRect((b.x + b.w / 2) * cw - 1, (top - 2) * ch - 2, 4, 4); } }
+      for (const w of b.wins) {
+        if (Math.random() < 0.0004) w.on = !w.on;
+        const wx = w.x * cw + cw * 0.15, wy = w.y * ch + ch * 0.2;
+        if (w.on && day < 0.85) {
+          ctx.fillStyle = mix(w.col, '#5e6873', day); ctx.globalAlpha = 0.9; ctx.fillRect(wx, wy, cw * 0.75, ch * 0.6);
+          ctx.globalAlpha = 0.18; ctx.fillRect(wx - 3, wy - 3, cw * 0.75 + 6, ch * 0.6 + 6); ctx.globalAlpha = 1;
+        } else { ctx.fillStyle = mix('#1a1f30', '#48515b', day); ctx.fillRect(wx, wy, cw * 0.75, ch * 0.6); }
+      }
+    }
+    ctx.restore();
+    // blurry lights through the rain
+    for (const k of bokeh) {
+      const a = (0.18 + 0.1 * Math.sin(t * 0.0012 + k.ph)) * (1 - day * 0.7);
+      const g = ctx.createRadialGradient(k.x, k.y, 0, k.x, k.y, k.r);
+      g.addColorStop(0, `rgba(${k.col}, ${a})`); g.addColorStop(1, `rgba(${k.col}, 0)`);
+      ctx.fillStyle = g; ctx.fillRect(k.x - k.r, k.y - k.r, k.r * 2, k.r * 2);
+    }
+    // rain falling outside
+    for (const o of outside) if (o.x < (ix1 + 1) * cw && o.x > ix0 * cw) put(Math.floor(o.x / cw), Math.floor(o.y / ch), prefs.rain === 2 ? '/' : '|', mix('#3b4a66', '#c9d3dc', day * 0.6), 130);
+
+    // the glass: fog, trails and drops
+    drawText(130);     // everything outside the glass first
+    const fw = ix1 - ix0 + 1, fh = iy1 - iy0 + 1;
+    if (fogCv.width !== fw || fogCv.height !== fh) { fogCv.width = fw; fogCv.height = fh; }
+    const img = fogCtx.createImageData(fw, fh), A = 255 * (0.3 + day * 0.12);
+    for (let i = 0; i < fog.length; i++) { img.data[i * 4] = 214; img.data[i * 4 + 1] = 224; img.data[i * 4 + 2] = 238; img.data[i * 4 + 3] = fog[i] * A; }
+    fogCtx.putImageData(img, 0, 0);
+    ctx.save(); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(fogCv, px0, py0, pw, ph);
+    ctx.restore();
+    cellPri.fill(0);
+    for (const tr of trails) put(Math.floor(tr.x / cw), Math.floor(tr.y / ch), tr.life > 0.6 ? ':' : '.', mix('#1a2233', '#cfe2f5', tr.life * 0.55), 200);
+    for (const d of drops) put(Math.floor(d.x / cw), Math.floor(d.y / ch), d.r < 2 ? '.' : d.r < 3 ? ',' : d.r < 4.4 ? 'o' : 'O', d.vy > 0 ? '#e6f2ff' : '#bcd3ea', 210);
+
+    // window frame
+    const frame = mix('#5a3a26', '#ffb070', lamp * 0.1), frameDk = mix('#3e2618', '#ffb070', lamp * 0.06);
+    for (let x = W.x0; x <= W.x1; x++) { put(x, W.y0, '=', frame, 300); put(x, W.y1, '=', frame, 300); put(x, my, '=', frameDk, 300); }
+    for (let y = W.y0; y <= W.y1; y++) { for (const x of [W.x0, W.x0 + 1, W.x1 - 1, W.x1]) put(x, y, '#', x === W.x0 || x === W.x1 ? frameDk : frame, 300); put(mx, y, '|', frameDk, 300); }
+    if (prefs.clock) drawClock();
+    drawLights(t);
+    drawSill(t, lamp);
+    drawText(1e9);
+    drawLightGlow(t);
+    // a warm lamp glow over the room at night
+    const gl = ctx.createRadialGradient(innerWidth * 0.5, innerHeight * 0.95, 0, innerWidth * 0.5, innerHeight * 0.95, innerWidth * 0.7);
+    gl.addColorStop(0, `rgba(255, 170, 90, ${0.12 * lamp})`); gl.addColorStop(1, 'rgba(255, 170, 90, 0)');
+    ctx.fillStyle = gl; ctx.fillRect(0, 0, innerWidth, innerHeight);
+    if (paused) { ctx.fillStyle = 'rgba(255, 240, 220, .8)'; const m = '[ paused ]'; ctx.fillText(m, innerWidth / 2 - ctx.measureText(m).width / 2, innerHeight * 0.8); }
+    if (rainGain) rainGain.gain.value = [0.08, 0.16, 0.28][prefs.rain];
+  }
+  function drawText() {
+    const buckets = new Map();
+    for (let i = 0; i < cellPri.length; i++) { if (cellPri[i] <= 0) continue; let b = buckets.get(cellCol[i]); if (!b) buckets.set(cellCol[i], b = []); b.push(i); }
+    for (const [col, arr] of buckets) { ctx.fillStyle = col; for (const i of arr) ctx.fillText(cellCh[i], (i % cols) * cw, Math.floor(i / cols) * ch); }
+  }
+
+  // ---------- loop ----------
+  let paused = false, clock = 0, last = 0;
+  function frame(now) {
+    const dt = Math.min(50, now - last); last = now;
+    if (!paused) { clock += dt; updateRain(); updateSill(clock); }
+    if (Math.floor(now / 30000) !== Math.floor((now - dt) / 30000)) day = daylight();
+    draw(clock);
+    requestAnimationFrame(frame);
+  }
+  resize(); addEventListener('resize', resize);
+  requestAnimationFrame(frame);
+
+  // ---------- input ----------
+  let dragging = false, lastP = null;
+  canvas.addEventListener('pointerdown', e => {
+    if (prefs.sound) applySound();
+    const x = e.clientX, y = e.clientY;
+    const c = catPos(), m = mugPos();
+    if (hitArt(x, y, c, 17, 5)) {
+      cat.awake = 140; sfx.meow(); sfx.purr(true); setTimeout(() => sfx.purr(false), 2400);
+      toast(['meow!', 'purrr…', 'the cat stretches', 'mrrp?'][Math.random() * 4 | 0]); return;
+    }
+    if (hitArt(x, y, m, 11, 5)) {
+      if (sips < 6) { sips++; sfx.sip(); for (let k = 0; k < 6; k++) steam.push({ x: (m.x + 4 + rnd(0, 3)) * cw, y: (m.y - 0.5) * ch, life: 0, max: rnd(40, 70), w: Math.random() * 10 }); toast(sips < 6 ? ['mmm… cozy', 'warm and sweet', 'just right', 'one more sip'][Math.random() * 4 | 0] : 'all gone! tap again for a refill'); }
+      else { sips = 0; sfx.sip(); toast('fresh coffee, refilled'); }
+      return;
+    }
+    if (inGlass(x, y)) { dragging = true; lastP = { x, y }; wipe(x, y); sfx.squeak(); canvas.setPointerCapture(e.pointerId); }
+  });
+  canvas.addEventListener('pointermove', e => {
+    const x = e.clientX, y = e.clientY;
+    canvas.style.cursor = inGlass(x, y) ? 'grab' : (hitArt(x, y, catPos(), 17, 5) || hitArt(x, y, mugPos(), 11, 5)) ? 'pointer' : '';
+    if (!dragging) return;
+    const steps = Math.ceil(Math.hypot(x - lastP.x, y - lastP.y) / 5);
+    for (let k = 1; k <= steps; k++) wipe(lastP.x + (x - lastP.x) * k / steps, lastP.y + (y - lastP.y) * k / steps);
+    if (Math.random() < 0.15) sfx.squeak();
+    lastP = { x, y };
+  });
+  const end = () => { dragging = false; lastP = null; };
+  canvas.addEventListener('pointerup', end); canvas.addEventListener('pointercancel', end);
+
+  const rainBtn = document.getElementById('rainBtn'), sndBtn = document.getElementById('sndBtn');
+  function setRain(l) { prefs.rain = l; save(); rainBtn.textContent = RAIN_NAMES[l]; toast(['a gentle drizzle', 'rainy evening', 'a thunderstorm rolls in'][l]); if (l === 2) nextFlash = 120; }
+  rainBtn.textContent = RAIN_NAMES[prefs.rain];
+  rainBtn.addEventListener('click', () => setRain((prefs.rain + 1) % 3));
+  sndBtn.addEventListener('click', () => { prefs.sound = !prefs.sound; save(); applySound(); });
+  applySound();
+  addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    if (k === 'r') setRain((prefs.rain + 1) % 3);
+    else if (k === 'm') { prefs.sound = !prefs.sound; save(); applySound(); toast(prefs.sound ? 'sound on' : 'sound off'); }
+    else if (k === 'l') toggleLofi();
+    else if (k === 'c') { prefs.clock = !prefs.clock; save(); }
+    else if (k === 'h') { prefs.h24 = !prefs.h24; save(); }
+    else if (e.code === 'Space') { paused = !paused; e.preventDefault(); }
+  });
+  setTimeout(() => document.getElementById('help').style.opacity = '0.35', 9000);
+})();
+</script>
+</body>
+</html>
