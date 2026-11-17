@@ -11,7 +11,7 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: #22170f; }
   canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
   #help {
-    position: fixed; left: 12px; bottom: 10px; max-width: calc(100vw - 330px);
+    position: fixed; left: 12px; bottom: 10px; max-width: calc(100vw - 640px);
     font: 12px ui-monospace, Menlo, Consolas, monospace; line-height: 1.5;
     color: rgba(255, 232, 205, .55); background: rgba(0, 0, 0, .25); padding: 6px 10px; border-radius: 6px;
     pointer-events: none; transition: opacity .6s;
@@ -29,15 +29,21 @@
   #tools button small { opacity: .5; font-size: 13px; }
   #tools button.on { background: rgba(230, 160, 100, .35); border: 1px solid rgba(255, 220, 180, .8); transform: translateY(-2px); }
   @media (max-width: 700px) { #tools { bottom: 60px; } }
-  #vol { width: 70px; accent-color: #e7a46a; }
-  #vol[hidden] { display: none; }
+  #ctl { flex-wrap: wrap; justify-content: flex-end; max-width: calc(100vw - 28px); }
+  #ctl .seg { display: flex; border: 1px dashed rgba(255, 210, 170, .35); border-radius: 18px; overflow: hidden; background: rgba(40, 24, 14, .7); }
+  #ctl .seg button { border: 0; border-radius: 0; background: none; padding: 3px 11px 5px; opacity: .7; }
+  #ctl .seg button.on { opacity: 1; background: rgba(230, 160, 100, .35); }
+  .snd { display: flex; align-items: center; gap: 8px; font: 700 17px 'Gaegu', ui-monospace, monospace; color: #ffe2c2;
+    background: rgba(40, 24, 14, .7); border: 1px dashed rgba(255, 210, 170, .35); border-radius: 18px; padding: 3px 12px 5px; }
+  .snd span { min-width: 70px; }
+  #vol { width: 90px; accent-color: #e7a46a; }
   #toast {
     position: fixed; left: 50%; top: 16px; transform: translate(-50%, -20px); opacity: 0; pointer-events: none;
     font: 700 20px 'Gaegu', ui-monospace, monospace; color: #fff3e3; background: rgba(60, 34, 18, .85);
     padding: 4px 16px 6px; border-radius: 20px; transition: opacity .4s, transform .4s; white-space: nowrap;
   }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
-  @media (max-width: 700px) { #help { display: none; } }
+  @media (max-width: 1100px) { #help { display: none; } }
 </style>
 </head>
 <body>
@@ -49,10 +55,11 @@
   <button data-tool="squeegee">squeegee <small>3</small></button>
 </div>
 <div id="ctl">
-  <input id="vol" type="range" min="0" max="1" step="0.05" value="0.6" aria-label="music volume" hidden>
+  <div class="seg" id="weather">
+    <button data-w="0">drizzle</button><button data-w="1">rain</button><button data-w="2">thunderstorm</button><button data-w="3">snow</button>
+  </div>
   <button id="lofiBtn">♪ lofi</button>
-  <button id="rainBtn">rain</button>
-  <button id="sndBtn">sound: off</button>
+  <label class="snd"><span id="sndLbl">sound off</span><input id="vol" type="range" min="0" max="1" step="0.05" value="0" aria-label="sound volume"></label>
 </div>
 <div id="toast"></div>
 <script>
@@ -62,10 +69,11 @@
 
   // ---------- saved preferences ----------
   const STORE = 'ascii-cafe-v1';
-  const prefs = { sound: false, rain: 1, clock: true, h24: false };
+  const prefs = { volume: 0, rain: 1, clock: true, h24: false };
   try { Object.assign(prefs, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch (e) {}
   const save = () => { try { localStorage.setItem(STORE, JSON.stringify(prefs)); } catch (e) {} };
-  const RAIN_NAMES = ['drizzle', 'rain', 'storm'];
+  const WEATHER = ['drizzle', 'rain', 'thunderstorm', 'snow'];
+  if (!(prefs.rain >= 0 && prefs.rain <= 3)) prefs.rain = 1;
 
   // ---------- helpers ----------
   const rnd = (a, b) => a + Math.random() * (b - a);
@@ -156,13 +164,14 @@
   let flash = 0, nextFlash = 600;
   function inGlass(px, py) { return px > ix0 * cw && px < (ix1 + 1) * cw && py > iy0 * ch && py < (iy1 + 1) * ch; }
   function updateRain() {
-    const lvl = prefs.rain;
-    // new little drops land on the glass
-    const spawn = [0.25, 0.7, 1.4][lvl];
-    for (let k = 0; k < 3; k++) if (Math.random() < spawn / 3 && drops.length < [70, 150, 230][lvl])
-      drops.push({ x: rnd(ix0, ix1 + 1) * cw, y: rnd(iy0, iy1 + 1) * ch, r: rnd(1.2, 3.2), vy: 0, wob: Math.random() * 10 });
+    const lvl = prefs.rain, snow = lvl === 3;
+    // new little drops (or snowflakes) land on the glass
+    const spawn = [0.25, 0.7, 1.4, 0.2][lvl];
+    for (let k = 0; k < 3; k++) if (Math.random() < spawn / 3 && drops.length < [70, 150, 230, 55][lvl])
+      drops.push({ x: rnd(ix0, ix1 + 1) * cw, y: rnd(iy0, iy1 + 1) * ch, r: rnd(1.2, 3.2), vy: 0, wob: Math.random() * 10, snow, melt: snow ? rnd(300, 700) : 0 });
     for (let i = drops.length - 1; i >= 0; i--) {
       const d = drops[i];
+      if (d.snow) { if (--d.melt <= 0) { d.snow = false; d.r = 1.6; } continue; }     // flakes stick, then melt into tiny drops
       if (d.vy === 0 && d.r > 3.3 && Math.random() < 0.01) d.vy = 0.3;
       if (d.vy > 0) {
         d.vy = Math.min(2.2, d.vy + 0.03 * d.r / 4);
@@ -180,9 +189,13 @@
     for (let i = trails.length - 1; i >= 0; i--) { trails[i].life -= 0.006; if (trails[i].life <= 0) trails.splice(i, 1); }
     if (trails.length > 900) trails.splice(0, trails.length - 900);
     // rain falling outside
-    const out = [3, 8, 15][lvl];
-    for (let k = 0; k < out; k++) outside.push({ x: rnd(ix0, ix1) * cw, y: iy0 * ch, vy: rnd(9, 14), vx: lvl === 2 ? 2 : 0.6 });
-    for (let i = outside.length - 1; i >= 0; i--) { const o = outside[i]; o.y += o.vy; o.x += o.vx; if (o.y > (iy1 + 1) * ch) outside.splice(i, 1); }
+    const out = [3, 8, 15, Math.random() < 0.45 ? 1 : 0][lvl];
+    for (let k = 0; k < out; k++) outside.push(snow ? { x: rnd(ix0, ix1) * cw, y: iy0 * ch, vy: rnd(0.6, 1.4), vx: 0, snow: true, ph: Math.random() * 10 }
+                                                     : { x: rnd(ix0, ix1) * cw, y: iy0 * ch, vy: rnd(9, 14), vx: lvl === 2 ? 2 : 0.6 });
+    for (let i = outside.length - 1; i >= 0; i--) {
+      const o = outside[i]; o.y += o.vy; o.x += o.snow ? Math.sin(o.y * 0.02 + o.ph) * 0.5 : o.vx;
+      if (o.y > (iy1 + 1) * ch || (!snow && o.snow) || (snow && !o.snow && Math.random() < 0.2)) outside.splice(i, 1);
+    }
     // lightning in a storm
     flash *= 0.86;
     if (lvl === 2 && --nextFlash <= 0) { flash = 1; nextFlash = rnd(500, 1400); setTimeout(() => sfx.thunder(), rnd(300, 1600)); setTimeout(() => { if (Math.random() < 0.5) flash = 0.7; }, 120); }
@@ -369,7 +382,7 @@
   }
 
   // ---------- sound (made in the browser) ----------
-  let actx = null, master = null, rainGain = null, noiseBuf = null, brownBuf = null, purrGain = null;
+  let actx = null, master = null, windGain = null, rainGain = null, noiseBuf = null, brownBuf = null, purrGain = null;
   function ensureAudio() {
     if (actx) return actx;
     try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
@@ -384,6 +397,11 @@
     const hp = actx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 400;
     rainGain = actx.createGain(); rainGain.gain.value = 0;
     r.connect(hp).connect(bp).connect(rainGain).connect(master); r.start();
+    // soft winter wind when it snows
+    const wnd = actx.createBufferSource(); wnd.buffer = brownBuf; wnd.loop = true;
+    const wl = actx.createBiquadFilter(); wl.type = 'lowpass'; wl.frequency.value = 380;
+    windGain = actx.createGain(); windGain.gain.value = 0;
+    wnd.connect(wl).connect(windGain).connect(master); wnd.start();
     // the cat's purr: low rumble that pulses
     const pu = actx.createBufferSource(); pu.buffer = brownBuf; pu.loop = true;
     const pl = actx.createBiquadFilter(); pl.type = 'lowpass'; pl.frequency.value = 180;
@@ -394,7 +412,7 @@
     // little taps of drops on the glass
     const tap = () => {
       if (live() && !paused) {
-        const n = [1, 2, 4][prefs.rain];
+        const n = [1, 2, 4, 0][prefs.rain];
         for (let k = 0; k < n; k++) if (Math.random() < 0.6) tone(rnd(1800, 4200), rnd(0.008, 0.025), rnd(0.02, 0.05), 0.7, k * rnd(0.02, 0.09));
       }
       setTimeout(tap, rnd(60, 200));
@@ -402,12 +420,13 @@
     tap();
     return actx;
   }
-  const live = () => prefs.sound && actx && actx.state === 'running';
+  const live = () => prefs.volume > 0 && actx && actx.state === 'running';
   function applySound() {
-    sndBtn.textContent = prefs.sound ? 'sound: on' : 'sound: off'; sndBtn.classList.toggle('on', prefs.sound);
-    if (!prefs.sound) { if (actx) master.gain.setTargetAtTime(0, actx.currentTime, 0.2); return; }
+    sndLbl.textContent = prefs.volume > 0 ? `sound ${Math.round(prefs.volume * 100)}%` : 'sound off';
+    if (lofi) lofi.m.gain.setTargetAtTime(prefs.volume, lofi.ac.currentTime, 0.1);
+    if (prefs.volume <= 0) { if (actx) master.gain.setTargetAtTime(0, actx.currentTime, 0.1); return; }
     const a = ensureAudio(); if (!a) return; a.resume().catch(() => {});
-    master.gain.setTargetAtTime(0.9, a.currentTime, 0.4);
+    master.gain.setTargetAtTime(prefs.volume * 1.1, a.currentTime, 0.15);
   }
   function tone(f, vol, dur, rise = 1, when = 0, type = 'sine') {
     if (!live()) return;
@@ -425,8 +444,30 @@
   }
   const sfx = {
     thunder: () => { noise(brownBuf, 120, 0.9, rnd(2.5, 4), 'lowpass', 0.08); noise(noiseBuf, 300, 0.15, 1.2, 'lowpass', 0.02); },
-    sip: () => { noise(noiseBuf, 900, 0.18, 0.25); tone(320, 0.08, 0.15, 1.4, 0.12); },
-    meow: () => { tone(620, 0.12, 0.18, 1.5, 0, 'triangle'); tone(900, 0.1, 0.35, 0.6, 0.16, 'triangle'); },
+    sip: () => sfx.slurp(),
+    // a slurp: airy noise that sweeps up in pitch with a little wobble, then a soft gulp
+    slurp: () => {
+      if (!live()) return;
+      const t = actx.currentTime, src = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
+      src.buffer = noiseBuf; f.type = 'bandpass'; f.Q.value = 3.5;
+      f.frequency.setValueAtTime(500, t); f.frequency.exponentialRampToValueAtTime(1600, t + 0.45);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.5, t + 0.06);
+      for (let k = 0; k < 7; k++) g.gain.setValueAtTime(k % 2 ? 0.25 : 0.5, t + 0.08 + k * 0.05);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+      src.connect(f).connect(g).connect(master); src.start(t, Math.random()); src.stop(t + 0.55);
+      tone(260, 0.12, 0.12, 0.7, 0.55); tone(200, 0.08, 0.1, 0.8, 0.72);
+    },
+    // "mi-aow": a bright voice that rises then falls, shaped like a mouth opening
+    meow: () => {
+      if (!live()) return;
+      const t = actx.currentTime, o = actx.createOscillator(), f = actx.createBiquadFilter(), g = actx.createGain();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(520, t); o.frequency.linearRampToValueAtTime(760, t + 0.18); o.frequency.linearRampToValueAtTime(560, t + 0.55);
+      f.type = 'bandpass'; f.Q.value = 2.2;
+      f.frequency.setValueAtTime(900, t); f.frequency.linearRampToValueAtTime(1800, t + 0.2); f.frequency.linearRampToValueAtTime(800, t + 0.55);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.22, t + 0.05); g.gain.setValueAtTime(0.22, t + 0.4); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+      o.connect(f).connect(g).connect(master); o.start(t); o.stop(t + 0.65);
+    },
     purr: (on) => { if (!purrGain) return; const t = actx.currentTime; purrGain.gain.setTargetAtTime(on ? 0.25 : 0, t, 0.2); purrGain._lfo.gain.setTargetAtTime(on ? 0.2 : 0, t, 0.2); },
     squeak: () => tone(rnd(1400, 2000), 0.03, 0.06, 1.2, 0, 'triangle'),
     // wet, foamy squish plus tiny bubble crackles
@@ -445,7 +486,7 @@
     let ac; try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
     const m = ac.createGain(); m.gain.value = 0;
     const warm = ac.createBiquadFilter(); warm.type = 'lowpass'; warm.frequency.value = 2400;
-    m.connect(warm).connect(ac.destination); m.gain.setTargetAtTime(+vol.value, ac.currentTime, 0.8);
+    m.connect(warm).connect(ac.destination); m.gain.setTargetAtTime(prefs.volume, ac.currentTime, 0.8);
     const nb = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate), nd = nb.getChannelData(0);
     for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
     const BPM = 70, beat = 60 / BPM, swing = beat * 0.17;
@@ -483,11 +524,13 @@
   }
   function stopLofi() { if (!lofi) return; const L = lofi; lofi = null; L.m.gain.setTargetAtTime(0, L.ac.currentTime, 0.4); setTimeout(() => { clearInterval(L.timer); L.ac.close(); }, 1500); }
   function toggleLofi() {
-    if (lofi) { stopLofi(); lofiBtn.classList.remove('on'); vol.hidden = true; toast('lofi off'); }
-    else { startLofi(); lofiBtn.classList.add('on'); vol.hidden = false; toast('lofi on ♪'); }
+    if (lofi) { stopLofi(); lofiBtn.classList.remove('on'); toast('lofi off'); }
+    else { startLofi(); lofiBtn.classList.add('on'); toast(prefs.volume > 0 ? 'lofi on ♪' : 'lofi on ♪ — turn up the sound slider to hear it'); }
   }
   lofiBtn.addEventListener('click', toggleLofi);
-  vol.addEventListener('input', () => { if (lofi) lofi.m.gain.setTargetAtTime(+vol.value, lofi.ac.currentTime, 0.1); });
+  const sndLbl = document.getElementById('sndLbl');
+  vol.value = prefs.volume;
+  vol.addEventListener('input', () => { prefs.volume = +vol.value; save(); applySound(); });
 
   // ---------- toast ----------
   const toastEl = document.getElementById('toast'); let toastT;
@@ -534,7 +577,7 @@
       ctx.fillStyle = g; ctx.fillRect(k.x - k.r, k.y - k.r, k.r * 2, k.r * 2);
     }
     // rain falling outside
-    for (const o of outside) if (o.x < (ix1 + 1) * cw && o.x > ix0 * cw) put(Math.floor(o.x / cw), Math.floor(o.y / ch), prefs.rain === 2 ? '/' : '|', mix('#3b4a66', '#c9d3dc', day * 0.6), 130);
+    for (const o of outside) if (o.x < (ix1 + 1) * cw && o.x > ix0 * cw) put(Math.floor(o.x / cw), Math.floor(o.y / ch), o.snow ? (o.vy > 1 ? '*' : '.') : prefs.rain === 2 ? '/' : '|', o.snow ? '#f2f6ff' : mix('#3b4a66', '#c9d3dc', day * 0.6), 130);
 
     // the glass: fog, trails and drops
     drawText(130);     // everything outside the glass first
@@ -548,7 +591,7 @@
     ctx.restore();
     cellPri.fill(0);
     for (const tr of trails) put(Math.floor(tr.x / cw), Math.floor(tr.y / ch), tr.life > 0.6 ? ':' : '.', mix('#1a2233', '#cfe2f5', tr.life * 0.55), 200);
-    for (const d of drops) put(Math.floor(d.x / cw), Math.floor(d.y / ch), d.r < 2 ? '.' : d.r < 3 ? ',' : d.r < 4.4 ? 'o' : 'O', d.vy > 0 ? '#e6f2ff' : '#bcd3ea', 210);
+    for (const d of drops) put(Math.floor(d.x / cw), Math.floor(d.y / ch), d.snow ? '*' : d.r < 2 ? '.' : d.r < 3 ? ',' : d.r < 4.4 ? 'o' : 'O', d.snow ? '#ffffff' : d.vy > 0 ? '#e6f2ff' : '#bcd3ea', 210);
     // soapy bubbles (with a little rainbow shimmer)
     const FOAM_CH = ['.', 'o', 'O', '°', 'o', '@'], FOAM_COL = ['#f6f9ff', '#ffffff', '#dff0ff', '#ffe0f2', '#e9ffe9'];
     for (let y = iy0; y <= iy1; y++) for (let x = ix0; x <= ix1; x++) {
@@ -574,7 +617,7 @@
     gl.addColorStop(0, `rgba(255, 170, 90, ${0.12 * lamp})`); gl.addColorStop(1, 'rgba(255, 170, 90, 0)');
     ctx.fillStyle = gl; ctx.fillRect(0, 0, innerWidth, innerHeight);
     if (paused) { ctx.fillStyle = 'rgba(255, 240, 220, .8)'; const m = '[ paused ]'; ctx.fillText(m, innerWidth / 2 - ctx.measureText(m).width / 2, innerHeight * 0.8); }
-    if (rainGain) rainGain.gain.value = [0.08, 0.16, 0.28][prefs.rain];
+    if (rainGain) { rainGain.gain.value = [0.08, 0.16, 0.28, 0][prefs.rain]; windGain.gain.value = prefs.rain === 3 ? 0.18 : 0; }
   }
   function drawText() {
     const buckets = new Map();
@@ -597,11 +640,11 @@
   // ---------- input ----------
   let dragging = false, lastP = null;
   canvas.addEventListener('pointerdown', e => {
-    if (prefs.sound) applySound();
+    if (prefs.volume > 0) applySound();
     const x = e.clientX, y = e.clientY;
     const c = catPos(), m = mugPos();
     if (hitArt(x, y, c, 17, 5)) {
-      cat.awake = 140; sfx.meow(); sfx.purr(true); setTimeout(() => sfx.purr(false), 2400);
+      cat.awake = 140; sfx.meow(); setTimeout(() => sfx.purr(true), 500); setTimeout(() => sfx.purr(false), 3200);
       toast(['meow!', 'purrr…', 'the cat stretches', 'mrrp?'][Math.random() * 4 | 0]); return;
     }
     if (hitArt(x, y, m, 11, 5)) {
@@ -637,16 +680,21 @@
   }
   canvas.addEventListener('pointerup', end); canvas.addEventListener('pointercancel', end);
 
-  const rainBtn = document.getElementById('rainBtn'), sndBtn = document.getElementById('sndBtn');
-  function setRain(l) { prefs.rain = l; save(); rainBtn.textContent = RAIN_NAMES[l]; toast(['a gentle drizzle', 'rainy evening', 'a thunderstorm rolls in'][l]); if (l === 2) nextFlash = 120; }
-  rainBtn.textContent = RAIN_NAMES[prefs.rain];
-  rainBtn.addEventListener('click', () => setRain((prefs.rain + 1) % 3));
-  sndBtn.addEventListener('click', () => { prefs.sound = !prefs.sound; save(); applySound(); });
+  const wBtns = [...document.querySelectorAll('#weather button')];
+  function setRain(l, quiet) {
+    prefs.rain = l; save();
+    wBtns.forEach(b => b.classList.toggle('on', +b.dataset.w === l));
+    if (!quiet) toast(['a gentle drizzle', 'rainy evening', 'a thunderstorm rolls in', 'it started to snow'][l]);
+    if (l === 2) nextFlash = 120;
+  }
+  wBtns.forEach(b => b.addEventListener('click', () => setRain(+b.dataset.w)));
+  setRain(prefs.rain, true);
   applySound();
+  let lastVol = prefs.volume || 0.6;
   addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
-    if (k === 'r') setRain((prefs.rain + 1) % 3);
-    else if (k === 'm') { prefs.sound = !prefs.sound; save(); applySound(); toast(prefs.sound ? 'sound on' : 'sound off'); }
+    if (k === 'r') setRain((prefs.rain + 1) % 4);
+    else if (k === 'm') { if (prefs.volume > 0) { lastVol = prefs.volume; prefs.volume = 0; } else prefs.volume = lastVol; vol.value = prefs.volume; save(); applySound(); toast(prefs.volume > 0 ? 'sound on' : 'sound off'); }
     else if (k === 'l') toggleLofi();
     else if (k === '1') setTool('finger');
     else if (k === '2') setTool('sponge');

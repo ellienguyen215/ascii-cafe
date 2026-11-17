@@ -10,9 +10,9 @@ A cozy rainy window, drawn entirely with text characters. Raindrops gather and s
 | `1` `2` `3` | Pick finger / sponge / squeegee |
 | Tap the cat | Wake it up for a meow and a purr |
 | Tap the mug | Take a sip (tap when empty for a refill) |
-| `R` or the rain button | Drizzle → rain → thunderstorm |
+| Weather buttons (or `R`) | Drizzle, rain, thunderstorm or snow |
 | `L` or ♪ lofi | Lofi music |
-| `M` or sound | Rain, taps on the glass, squishy sponge, squeaky squeegee, popping bubbles, purring, sips and thunder |
+| Sound slider (or `M` to mute) | One slider for everything: rain, wind, taps on the glass, sponge, squeegee, bubbles, meows, purring, slurps, thunder and lofi. All the way left is off |
 | `C` / `H` | Show / hide the clock · 12 / 24-hour |
 | `Space` | Pause |
 
