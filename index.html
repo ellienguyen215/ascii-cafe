@@ -11,7 +11,7 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: #22170f; }
   canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
   #help {
-    position: fixed; left: 12px; bottom: 10px; max-width: calc(100vw - 640px);
+    position: fixed; left: 12px; bottom: 10px; max-width: calc(100vw - 800px);
     font: 12px ui-monospace, Menlo, Consolas, monospace; line-height: 1.5;
     color: rgba(255, 232, 205, .55); background: rgba(0, 0, 0, .25); padding: 6px 10px; border-radius: 6px;
     pointer-events: none; transition: opacity .6s;
@@ -43,7 +43,7 @@
     padding: 4px 16px 6px; border-radius: 20px; transition: opacity .4s, transform .4s; white-space: nowrap;
   }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
-  @media (max-width: 1100px) { #help { display: none; } }
+  @media (max-width: 1400px) { #help { display: none; } }
 </style>
 </head>
 <body>
@@ -105,14 +105,26 @@
   }
 
   // ---------- time of day (follows your clock) ----------
+  function hourNow() {
+    let o = null; try { o = localStorage.getItem('cafe-hour'); } catch (e) {}   // (for testing other times of day)
+    if (o !== null && o !== '') return +o;
+    const d = new Date(); return d.getHours() + d.getMinutes() / 60;
+  }
+  function morningness() {
+    const h = hourNow();
+    if (h >= 5.5 && h < 7) return (h - 5.5) / 1.5;
+    if (h >= 7 && h < 9.5) return 1;
+    if (h >= 9.5 && h < 11) return 1 - (h - 9.5) / 1.5;
+    return 0;
+  }
   function daylight() {
-    const d = new Date(), h = d.getHours() + d.getMinutes() / 60;
+    const h = hourNow();
     if (h >= 8 && h < 17) return 1;
     if (h >= 6 && h < 8) return (h - 6) / 2;
     if (h >= 17 && h < 19.5) return 1 - (h - 17) / 2.5;
     return 0;
   }
-  let day = daylight();
+  let day = daylight(), morning = morningness();
 
   // ---------- layout ----------
   let foam, foamSeed, W, buildings = [], bokeh = [], fog, lights = [], ix0, ix1, iy0, iy1, mx, my;
@@ -154,8 +166,8 @@
     cw = ctx.measureText('M').width; ch = FONT_PX;
     cols = Math.ceil(innerWidth / cw); rows = Math.ceil(innerHeight / ch);
     const n = cols * rows; cellCh = new Array(n); cellCol = new Array(n); cellPri = new Float32Array(n);
-    layout();
-    drops.length = 0; trails.length = 0;
+    layout(); placeBirds();
+    drops.length = 0; trails.length = 0; cat.x = null;
   }
 
   // ---------- rain on the glass ----------
@@ -259,21 +271,114 @@
   }
   document.querySelectorAll('#tools button').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
 
+  // ---------- birds on a wire (mornings and daytime) ----------
+  let birds = [], flying = [], wireY = 0;
+  function wireAt(gx) { const t = (gx - ix0) / (ix1 - ix0); return wireY + Math.round(Math.sin(t * Math.PI) * 2); }
+  function placeBirds() {
+    wireY = iy0 + Math.round((iy1 - iy0) * 0.34);
+    birds = [];
+    const n = Math.max(3, Math.min(7, Math.round((ix1 - ix0) / 22)));
+    for (let k = 0; k < n; k++) birds.push({ x: Math.round(ix0 + (k + 0.5 + rnd(-0.3, 0.3)) / n * (ix1 - ix0)), right: Math.random() < 0.5, bob: Math.random() * 10, gone: 0 });
+  }
+  function birdsOut() { return (day > 0.25 || morning > 0.2) && prefs.rain !== 2; }
+  function drawBirds(t) {
+    if (!birdsOut()) return;
+    const wire = mix('#2a2630', '#4a4650', day * 0.5);
+    for (let x = ix0; x <= ix1; x++) put(x, wireAt(x), '-', wire, 121);
+    for (const b of birds) {
+      if (b.gone > 0) { b.gone--; continue; }
+      const hop = Math.sin(t * 0.003 + b.bob) > 0.97 ? 1 : 0;
+      const art = b.right ? "(')>" : "<(')";
+      const col = mix('#3a3140', '#5a5060', day * 0.5);
+      for (let i = 0; i < 4; i++) put(b.x + i, wireAt(b.x) - 1 - hop, art[i], art[i] === '>' || art[i] === '<' ? '#e8a040' : col, 125);
+    }
+    for (let i = flying.length - 1; i >= 0; i--) {
+      const f = flying[i]; f.t++; f.x += f.vx; f.y += f.vy; f.vy -= 0.01;
+      put(Math.floor(f.x / cw), Math.floor(f.y / ch), f.t % 10 < 5 ? 'v' : '^', '#3a3140', 126);
+      if (f.y < iy0 * ch) flying.splice(i, 1);
+    }
+  }
+  function birdAt(px, py) {
+    if (!birdsOut()) return null;
+    const gx = px / cw, gy = py / ch;
+    return birds.find(b => !b.gone && gx >= b.x - 1 && gx <= b.x + 5 && Math.abs(gy - (wireAt(b.x) - 1)) < 1.6) || null;
+  }
+  function shooBird(b) {
+    b.gone = Math.round(rnd(900, 1800));
+    flying.push({ x: (b.x + 2) * cw, y: (wireAt(b.x) - 1) * ch, vx: (b.right ? 1 : -1) * rnd(1.2, 2), vy: -rnd(1, 1.6), t: 0 });
+    sfx.chirp();
+  }
+
   // ---------- windowsill friends ----------
-  const cat = { blink: 0, awake: 0, tail: 0, z: 0 };
-  const CAT_SLEEP = ['   /\\___/\\', '  (  -.-  )', '  /   ^   \\___', ' (  |   |  )   )~', '  \\_|___|_/___/'];
-  const CAT_AWAKE = ['   /\\___/\\', '  (  o.o  )', '  /   ^   \\___', ' (  |   |  )   )~', '  \\_|___|_/___/'];
+  // the cat has moods: sleep, watch (a raindrop), paw (at it), stretch, walk, awake (you tapped it)
+  const cat = { mode: 'sleep', t: 0, x: null, target: 0, dir: 1, tail: 0, drop: null, awake: 0, next: 900 };
+  const A = (rows, face) => ({ rows, face });
+  const CAT = {
+    sleep: A(['   /\\___/\\', '  (  -.-  )', '  /   ^   \\___', ' (  |   |  )   )~', '  \\_|___|_/___/'], 1),
+    awake: A(['   /\\___/\\', '  (  o.o  )', '  /   ^   \\___', ' (  |   |  )   )~', '  \\_|___|_/___/'], 1),
+    watch: A(['    /\\_/\\', '   ( o.o )', '    > ^ <', '   /|   |\\', '  (_|___|_)~'], 1),
+    paw:   A(['    /\\_/\\  ,', '   ( >.< )/', '    > ^ </', '   /|   |', '  (_|___|_)~'], 1),
+    stretch: A(['', '              /\\_/\\', '  ___________( -o- )', ' (_____________ ^ /', '  /_/      \\_\\'], 1),
+    walk1: A(['', '          /\\_/\\', '  _______( o.o )', ' (_________ ^ /~', '   /_/  \\_\\'], 2),
+    walk2: A(['', '          /\\_/\\', '  _______( o.o )', ' (_________ ^ /~', '    \\_\\ /_/'], 2),
+  };
+  const FLIP = { '/': '\\', '\\': '/', '(': ')', ')': '(', '<': '>', '>': '<', ',': ',' };
+  const flipArt = rows => { const w = Math.max(...rows.map(r => r.length)); return rows.map(r => [...r.padEnd(w)].reverse().map(c => FLIP[c] || c).join('')); };
   const MUG = ['  .------.', '  |      |]', '  |      |]', '  \\      /', "   `----'"];
   const PLANT = ['  \\ | /', ' \\\\ | //', '  \\\\|//', ' .-----.', ' \\_____/'];
   let sips = 0, steam = [], fills = [];
-  function catPos() { return { x: ix1 - 20, y: W.y1 - 4 }; }
+  function catZone() { return [mugPos().x + 13, ix1 - 19]; }
+  function catPos() { if (cat.x === null || cat.x > ix1 - 17) cat.x = ix1 - 20; return { x: Math.round(cat.x), y: W.y1 - 4 }; }
   function mugPos() { return { x: ix0 + Math.round((ix1 - ix0) * 0.32), y: W.y1 - 4 }; }
   function plantPos() { return { x: ix0 + 1, y: W.y1 - 4 }; }
   function hitArt(px, py, pos, w, h) { const gx = px / cw, gy = py / ch; return gx >= pos.x && gx <= pos.x + w && gy >= pos.y && gy <= pos.y + h; }
+  function setCat(mode) { cat.mode = mode; cat.t = 0; }
+  function updateCat() {
+    cat.t++;
+    const c = catPos(), [z0, z1] = catZone();
+    if (cat.mode === 'awake') { if (cat.t > 140) setCat('sleep'); return; }
+    if (cat.mode === 'sleep') {
+      // a raindrop sliding down nearby catches its eye
+      if (Math.random() < 0.004) {
+        const d = drops.find(d => d.vy > 0 && Math.abs(d.x / cw - (c.x + 6)) < 16 && d.y / ch > iy0 + (iy1 - iy0) * 0.45);
+        if (d) { cat.drop = d; setCat('watch'); return; }
+      }
+      if (--cat.next <= 0) { cat.next = rnd(1500, 4000); setCat('stretch'); }
+      return;
+    }
+    if (cat.mode === 'watch') {
+      if (!drops.includes(cat.drop)) { setCat(Math.random() < 0.5 ? 'sleep' : 'watch'); cat.drop = drops.find(d => d.vy > 0 && Math.abs(d.x / cw - (c.x + 6)) < 18) || null; if (!cat.drop) setCat('sleep'); return; }
+      if (cat.t > 40 && cat.drop.y / ch > iy1 - 7 && Math.abs(cat.drop.x / cw - (c.x + 7)) < 9) setCat('paw');
+      else if (cat.t > 400) setCat('sleep');
+      return;
+    }
+    if (cat.mode === 'paw') {
+      if (cat.t === 8 && cat.drop) {               // bop! the drop splashes
+        const d = cat.drop, k = drops.indexOf(d);
+        if (k >= 0) drops.splice(k, 1);
+        for (let i = 0; i < 6; i++) trails.push({ x: d.x + rnd(-14, 14), y: d.y + rnd(-8, 8), life: 1 });
+        sfx.pat(); cat.drop = null;
+      }
+      if (cat.t > 30) setCat(Math.random() < 0.6 ? 'sleep' : 'watch');
+      if (cat.mode === 'watch') { cat.drop = drops.find(d => d.vy > 0 && Math.abs(d.x / cw - (c.x + 6)) < 18) || null; if (!cat.drop) setCat('sleep'); }
+      return;
+    }
+    if (cat.mode === 'stretch') {
+      if (cat.t > 110) {
+        let tx = rnd(z0, z1); for (let k = 0; k < 6 && Math.abs(tx - cat.x) < 10; k++) tx = rnd(z0, z1);
+        cat.target = Math.max(z0, Math.min(z1, tx)); cat.dir = cat.target > cat.x ? 1 : -1; setCat('walk');
+      }
+      return;
+    }
+    if (cat.mode === 'walk') {
+      cat.x += cat.dir * 0.09;
+      if ((cat.dir > 0 && cat.x >= cat.target) || (cat.dir < 0 && cat.x <= cat.target)) { cat.x = cat.target; setCat('sleep'); }
+    }
+  }
   function updateSill(t) {
-    if (cat.awake > 0) cat.awake--;
     if (Math.random() < 0.004) cat.tail = 30;
     if (cat.tail > 0) cat.tail--;
+    updateCat();
     // steam curls up from the mug
     const m = mugPos();
     if (sips < 6 && Math.random() < 0.18) steam.push({ x: (m.x + 4 + rnd(0, 3)) * cw, y: (m.y - 0.5) * ch, life: 0, max: rnd(50, 90), w: Math.random() * 10 });
@@ -305,21 +410,34 @@
       put(Math.floor(s.x / cw), Math.floor(s.y / ch), s.life % 20 < 10 ? '(' : ')', mix('#2a1c14', '#f3e9de', a * 0.7), 380);
     }
     // sleeping cat
-    const c = catPos(), art = (cat.awake ? CAT_AWAKE : CAT_SLEEP).slice();
-    if (cat.tail > 0) art[3] = art[3].slice(0, -1) + (cat.tail % 10 < 5 ? '~' : '/');
-    if (cat.awake > 0 && cat.awake < 40) art[1] = '  (  ^.^  )';
-    const breathe = Math.sin(t * 0.0018) > 0.3 && !cat.awake ? 1 : 0;
-    if (breathe) art[3] = art[3].replace('  )   )', '  )    )');
-    putArt(art, c.x, c.y, (ch2, i, r) => r === 1 && i >= 4 && i <= 8 && 'o-.^'.includes(ch2) ? '#3b2a20' : r === 2 && ch2 === '^' ? '#ff9fb8' : '#f6b374', 410);
+    const c = catPos();
+    let key = cat.mode;
+    if (key === 'walk') key = Math.floor(cat.t / 9) % 2 ? 'walk1' : 'walk2';
+    const pose = CAT[key];
+    let art = pose.rows.slice();
+    if (key === 'sleep' || key === 'awake') {
+      if (cat.tail > 0) art[3] = art[3].slice(0, -1) + (cat.tail % 10 < 5 ? '~' : '/');
+      if (key === 'awake' && cat.t > 100) art[1] = '  (  ^.^  )';
+      if (key === 'sleep' && Math.sin(t * 0.0018) > 0.3) art[3] = art[3].replace('  )   )', '  )    )');
+    }
+    if (key === 'watch' && cat.drop) {             // eyes follow the drop
+      const dx = cat.drop.x / cw - (c.x + 7);
+      art[1] = dx < -3 ? '   (o.o  )' : dx > 3 ? '   (  o.o)' : '   ( o.o )';
+    }
+    if (cat.mode === 'walk' && cat.dir < 0) art = flipArt(art);
+    putArt(art, c.x, c.y, (ch2, i, r) => r === pose.face && 'o-.^><'.includes(ch2) && art[r].indexOf('(') < i && i < art[r].lastIndexOf(')') ? '#3b2a20'
+      : r === pose.face + 1 && ch2 === '^' ? '#ff9fb8' : '#f6b374', 410);
     // little z's float up while it sleeps
-    if (!cat.awake) {
+    if (cat.mode === 'sleep') {
       const p2 = (t * 0.0004) % 1;
       const zz = ['z', 'z', 'Z'];
       zz.forEach((z, k) => {
         const pp = (p2 + k / 3) % 1;
         put(c.x + 11 + Math.round(pp * 4), c.y - 1 - Math.round(pp * 4), z, mix('#2a1c14', '#ffe8cc', 1 - pp), 420);
       });
-    } else if (cat.awake > 60) putText('meow!', c.x + 11, c.y - 2, '#ffe8cc', 420);
+    } else if (cat.mode === 'awake' && cat.t < 80) putText('meow!', c.x + 11, c.y - 2, '#ffe8cc', 420);
+    else if (cat.mode === 'paw' && cat.t < 20) putText('bop!', c.x + 12, c.y - 1, '#ffe8cc', 420);
+    else if (cat.mode === 'stretch' && cat.t > 20 && cat.t < 90) putText('*streeetch*', c.x + 3, c.y - 1, '#ffe8cc', 420);
   }
 
   // ---------- string lights ----------
@@ -418,6 +536,11 @@
       setTimeout(tap, rnd(60, 200));
     };
     tap();
+    const chirps = () => {      // birds chatter now and then in the morning
+      if (live() && !paused && birdsOut() && morning > 0.3 && Math.random() < 0.5) { const n = 2 + (Math.random() * 3 | 0); for (let k = 0; k < n; k++) tone(rnd(2800, 3800), 0.025, 0.05, rnd(1.1, 1.4), k * 0.08); }
+      setTimeout(chirps, rnd(2500, 7000));
+    };
+    chirps();
     return actx;
   }
   const live = () => prefs.volume > 0 && actx && actx.state === 'running';
@@ -470,6 +593,8 @@
     },
     purr: (on) => { if (!purrGain) return; const t = actx.currentTime; purrGain.gain.setTargetAtTime(on ? 0.25 : 0, t, 0.2); purrGain._lfo.gain.setTargetAtTime(on ? 0.2 : 0, t, 0.2); },
     squeak: () => tone(rnd(1400, 2000), 0.03, 0.06, 1.2, 0, 'triangle'),
+    chirp: () => { for (let k = 0; k < 3; k++) tone(rnd(2600, 3400), 0.05, 0.06, rnd(1.2, 1.5), k * 0.09); },
+    pat: () => { tone(rnd(1600, 2200), 0.05, 0.05, 0.6, 0, 'triangle'); noise(noiseBuf, 2500, 0.06, 0.08, 'bandpass', 0.005); },
     // wet, foamy squish plus tiny bubble crackles
     squish: (sp) => { noise(brownBuf, rnd(500, 900), 0.22, rnd(0.12, 0.2), 'lowpass', 0.02); noise(noiseBuf, rnd(2500, 4000), 0.05, 0.12, 'bandpass', 0.01);
       for (let k = 0; k < 3; k++) if (Math.random() < 0.6) tone(rnd(2200, 4200), 0.025, 0.03, 1.3, rnd(0, 0.12)); },
@@ -489,9 +614,12 @@
     m.connect(warm).connect(ac.destination); m.gain.setTargetAtTime(prefs.volume, ac.currentTime, 0.8);
     const nb = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate), nd = nb.getChannelData(0);
     for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
-    const BPM = 70, beat = 60 / BPM, swing = beat * 0.17;
-    const CH = [[52, 55, 59, 62], [57, 60, 64, 67], [50, 53, 57, 60], [55, 59, 62, 65]];   // Em7 – Am7 – Dm7 – G7
-    const MEL = [71, 74, 76, 79, 81, 79, 76, 74];
+    const am = morning > 0.4;     // mornings get a brighter, bouncier tune
+    const BPM = am ? 84 : 70, beat = 60 / BPM, swing = beat * (am ? 0.12 : 0.17);
+    const CH = am ? [[60, 64, 67, 71], [57, 60, 64, 67], [53, 57, 60, 64], [55, 59, 62, 64]]    // Cmaj7 – Am7 – Fmaj7 – G6
+                  : [[52, 55, 59, 62], [57, 60, 64, 67], [50, 53, 57, 60], [55, 59, 62, 65]];   // Em7 – Am7 – Dm7 – G7
+    const MEL = am ? [76, 79, 81, 84, 86, 84, 81, 79, 88] : [71, 74, 76, 79, 81, 79, 76, 74];
+    warm.frequency.value = am ? 3400 : 2400;
     const hz = n => 440 * Math.pow(2, (n - 69) / 12);
     const keys = (n, t, len, v) => { const o = ac.createOscillator(), o2 = ac.createOscillator(), g = ac.createGain(), g2 = ac.createGain(), f = ac.createBiquadFilter();
       o.type = 'sine'; o2.type = 'triangle'; o.frequency.value = hz(n); o2.frequency.value = hz(n) * 2.002; g2.gain.value = 0.12;
@@ -515,7 +643,7 @@
         if (e === 0 || e === 5) kick(t);
         if (e === 2 || e === 6) hit(t, 1800, 0.2, 0.18);
         hit(t, 8000, e % 2 ? 0.03 : 0.055, 0.05);
-        if (Math.random() < 0.25 && e % 2 === 0) keys(MEL[Math.random() * MEL.length | 0], t, beat * 1.4, 0.045);
+        if (Math.random() < (am ? 0.38 : 0.25) && e % 2 === 0) keys(MEL[Math.random() * MEL.length | 0], t, beat * 1.4, am ? 0.05 : 0.045);
         next += beat / 2; step++;
       }
     };
@@ -525,7 +653,7 @@
   function stopLofi() { if (!lofi) return; const L = lofi; lofi = null; L.m.gain.setTargetAtTime(0, L.ac.currentTime, 0.4); setTimeout(() => { clearInterval(L.timer); L.ac.close(); }, 1500); }
   function toggleLofi() {
     if (lofi) { stopLofi(); lofiBtn.classList.remove('on'); toast('lofi off'); }
-    else { startLofi(); lofiBtn.classList.add('on'); toast(prefs.volume > 0 ? 'lofi on ♪' : 'lofi on ♪ — turn up the sound slider to hear it'); }
+    else { startLofi(); lofiBtn.classList.add('on'); toast((morning > 0.4 ? 'morning lofi ♪' : 'lofi on ♪') + (prefs.volume > 0 ? '' : ' — turn up the sound slider to hear it')); }
   }
   lofiBtn.addEventListener('click', toggleLofi);
   const sndLbl = document.getElementById('sndLbl');
@@ -549,9 +677,18 @@
     // outside: sky
     const px0 = ix0 * cw, py0 = iy0 * ch, pw = (ix1 - ix0 + 1) * cw, ph = (iy1 - iy0 + 1) * ch;
     const sky = ctx.createLinearGradient(0, py0, 0, py0 + ph);
-    sky.addColorStop(0, mix('#0b1026', '#76838f', day)); sky.addColorStop(0.6, mix('#262448', '#97a1aa', day)); sky.addColorStop(1, mix('#5a3650', '#b6bcc2', day));
+    const mo = morning * (prefs.rain === 2 ? 0.5 : 1);
+    sky.addColorStop(0, mix(mix('#0b1026', '#76838f', day), '#8ea6cf', mo * 0.75));
+    sky.addColorStop(0.6, mix(mix('#262448', '#97a1aa', day), '#f0b2a2', mo * 0.8));
+    sky.addColorStop(1, mix(mix('#5a3650', '#b6bcc2', day), '#ffd38f', mo * 0.9));
     ctx.fillStyle = sky; ctx.fillRect(px0, py0, pw, ph);
     if (flash > 0.02) { ctx.fillStyle = `rgba(225, 232, 255, ${flash * 0.55})`; ctx.fillRect(px0, py0, pw, ph); }
+    if (mo > 0.02) {      // the morning sun rising behind the city
+      const sx = px0 + pw * 0.72, sy = py0 + ph * 0.78, sr = ph * 0.75;
+      const sg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
+      sg.addColorStop(0, `rgba(255, 236, 170, ${0.75 * mo})`); sg.addColorStop(0.12, `rgba(255, 214, 140, ${0.5 * mo})`); sg.addColorStop(1, 'rgba(255, 190, 140, 0)');
+      ctx.save(); ctx.beginPath(); ctx.rect(px0, py0, pw, ph); ctx.clip(); ctx.fillStyle = sg; ctx.fillRect(px0, py0, pw, ph); ctx.restore();
+    }
     // buildings (clipped to the window)
     ctx.save(); ctx.beginPath(); ctx.rect(px0, py0, pw, ph); ctx.clip();
     for (const b of buildings) {
@@ -569,6 +706,7 @@
       }
     }
     ctx.restore();
+    drawBirds(t);
     // blurry lights through the rain
     for (const k of bokeh) {
       const a = (0.18 + 0.1 * Math.sin(t * 0.0012 + k.ph)) * (1 - day * 0.7);
@@ -630,7 +768,7 @@
   function frame(now) {
     const dt = Math.min(50, now - last); last = now;
     if (!paused) { clock += dt; updateRain(); updateSill(clock); }
-    if (Math.floor(now / 30000) !== Math.floor((now - dt) / 30000)) day = daylight();
+    if (Math.floor(now / 30000) !== Math.floor((now - dt) / 30000)) { day = daylight(); morning = morningness(); }
     draw(clock);
     requestAnimationFrame(frame);
   }
@@ -644,7 +782,7 @@
     const x = e.clientX, y = e.clientY;
     const c = catPos(), m = mugPos();
     if (hitArt(x, y, c, 17, 5)) {
-      cat.awake = 140; sfx.meow(); setTimeout(() => sfx.purr(true), 500); setTimeout(() => sfx.purr(false), 3200);
+      setCat('awake'); sfx.meow(); setTimeout(() => sfx.purr(true), 500); setTimeout(() => sfx.purr(false), 3200);
       toast(['meow!', 'purrr…', 'the cat stretches', 'mrrp?'][Math.random() * 4 | 0]); return;
     }
     if (hitArt(x, y, m, 11, 5)) {
@@ -652,6 +790,8 @@
       else { sips = 0; sfx.sip(); toast('fresh coffee, refilled'); }
       return;
     }
+    const bird = birdAt(x, y);
+    if (bird) { shooBird(bird); toast('tweet!'); return; }
     if (inGlass(x, y)) { dragging = true; lastP = { x, y }; useTool(x, y, 0); canvas.setPointerCapture(e.pointerId); }
   });
   canvas.addEventListener('pointermove', e => {
