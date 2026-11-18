@@ -144,7 +144,7 @@
     for (let x = ix0 - 2; x < ix1 + 2;) {
       const w = Math.round(rnd(6, 15)), h = Math.round((iy1 - iy0) * rnd(0.22, 0.62));
       const wins = [];
-      for (let yy = iy1 - h + 2; yy < iy1 - 1; yy += 2) for (let xx = x + 1; xx < x + w - 1; xx += 2) wins.push({ x: xx, y: yy, on: Math.random() < 0.45, col: Math.random() < 0.8 ? '#ffd27a' : '#ffb0c8' });
+      for (let yy = iy1 - h + 2; yy < iy1 - 1; yy += 2) for (let xx = x + 1; xx < x + w - 1; xx += 2) wins.push({ x: xx, y: yy, on: Math.random() < 0.45, dayOn: Math.random() < 0.35, col: Math.random() < 0.8 ? '#ffd27a' : '#ffb0c8' });
       buildings.push({ x, w, h, wins, tone: Math.random(), antenna: Math.random() < 0.3 });
       x += w + (Math.random() < 0.3 ? 1 : 0);
     }
@@ -706,9 +706,11 @@
       for (const w of b.wins) {
         if (Math.random() < 0.0004) w.on = !w.on;
         const wx = w.x * cw + cw * 0.15, wy = w.y * ch + ch * 0.2;
-        if (w.on && day < 0.85) {
-          ctx.fillStyle = mix(w.col, '#5e6873', day); ctx.globalAlpha = 0.9; ctx.fillRect(wx, wy, cw * 0.75, ch * 0.6);
-          ctx.globalAlpha = 0.18; ctx.fillRect(wx - 3, wy - 3, cw * 0.75 + 6, ch * 0.6 + 6); ctx.globalAlpha = 1;
+        // at night lots of windows glow; on a grey rainy day some still have their lights on, just softer
+        const lit = day < 0.85 ? w.on : w.on && w.dayOn;
+        if (lit) {
+          ctx.fillStyle = mix(w.col, '#e9dcc0', day * 0.45); ctx.globalAlpha = 0.9 - day * 0.15; ctx.fillRect(wx, wy, cw * 0.75, ch * 0.6);
+          ctx.globalAlpha = 0.18 * (1 - day * 0.6); ctx.fillRect(wx - 3, wy - 3, cw * 0.75 + 6, ch * 0.6 + 6); ctx.globalAlpha = 1;
         } else { ctx.fillStyle = mix('#1a1f30', '#48515b', day); ctx.fillRect(wx, wy, cw * 0.75, ch * 0.6); }
       }
     }
